@@ -1,0 +1,1408 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/fymbc/cs4650/blob/main/PS1\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "JnnwupedFEIV"
+      },
+      "source": [
+        "# Headline Classification with Neural BOW, LSTM\n",
+        "**CS 4650 \"Natural Language Processing\" Project 1**  \n",
+        "Georgia Tech, Spring 2025 (Instructor: Weicheng Ma)\n",
+        "\n",
+        "Welcome to the first full programming project for CS 4650! **To start, first make a copy of this notebook to your local drive, so you can edit it.**\n",
+        "\n",
+        "If you want GPUs (which will improve training times), you can always change your instance type by going to Runtime -> Change runtime type -> Hardware accelerator.\n",
+        "\n",
+        "**In this project, we will be using PyTorch.** If you are new to PyTorch, or simply want a refresher, we recommend you start by looking through these [Introduction to PyTorch](https://sites.cc.gatech.edu/classes/AY2021/cs7650_fall/slides/Introduction_to_PyTorch.pdf) slides and this interactive [PyTorch basics notebook](http://bit.ly/pytorchbasics). Additionally, this [text sentiment](http://bit.ly/pytorchexample) notebook will provide some insight into working with PyTorch with a specific NLP task."
+      ],
+      "id": "JnnwupedFEIV"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ZRdPqeMMFEIY"
+      },
+      "source": [
+        "## 1. Load and preprocess data [10 points]\n",
+        "This project will be modeling a *classification task* for headlines from [The Onion](https://www.theonion.com), a satirical news website. Our dataset contains headlines and whether they belong to The Onion or CNN. Given a headline, we want to predict whether it is Onion or not.\n",
+        "\n",
+        "The following cell loads, pre-processes and tokenizes our OnionOrNot dataset."
+      ],
+      "id": "ZRdPqeMMFEIY"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "!curl -so OnionOrNot.csv https://raw.githubusercontent.com/lukefeilberg/onion/master/OnionOrNot.csv"
+      ],
+      "metadata": {
+        "id": "YmV_uknBJA-o"
+      },
+      "id": "YmV_uknBJA-o",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "L3DkMDu7FEIZ"
+      },
+      "outputs": [],
+      "source": [
+        "# ===========================================================================\n",
+        "# Run some setup code for this notebook. Don't modify anything in this cell.\n",
+        "# ===========================================================================\n",
+        "\n",
+        "import torch\n",
+        "import random, sys\n",
+        "\n",
+        "RANDOM_SEED = 42\n",
+        "torch.manual_seed(RANDOM_SEED)\n",
+        "random.seed(RANDOM_SEED)\n",
+        "\n",
+        "# ===========================================================================\n",
+        "# A quick note on CUDA functionality (and `.to(model.device)`):\n",
+        "# CUDA is a parallel GPU platform produced by NVIDIA and is used by most GPU\n",
+        "# libraries in PyTorch. CUDA organizes GPUs into device IDs (i.e., \"cuda:X\" for GPU #X).\n",
+        "# \"device\" will tell PyTorch which GPU (or CPU) to place an object in. Since\n",
+        "# collab only uses one GPU, we will use 'cuda' as the device if a GPU is available\n",
+        "# and the CPU if not. You will run into problems if your tensors are on different devices.\n",
+        "# ===========================================================================\n",
+        "device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\n",
+        "\n",
+        "# Check what version of Python is running\n",
+        "print(sys.version)"
+      ],
+      "id": "L3DkMDu7FEIZ"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 1.1 Dataset preprocessing functions\n",
+        "The following cell define some methods to clean the dataset, but feel free to take a look to see some of the operations it's doing.\n"
+      ],
+      "metadata": {
+        "id": "0Fulh0MZ8y8b"
+      },
+      "id": "0Fulh0MZ8y8b"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Run some preprocessing code for our dataset. Don't modify anything in this cell.\n",
+        "# This code was adapted from fast-bert.\n",
+        "# ===========================================================================\n",
+        "\n",
+        "import re\n",
+        "import html\n",
+        "\n",
+        "def spec_add_spaces(t: str) -> str:\n",
+        "    \"Add spaces around / and # in `t`. \\n\"\n",
+        "    return re.sub(r\"([/#\\n])\", r\" \\1 \", t)\n",
+        "\n",
+        "def rm_useless_spaces(t: str) -> str:\n",
+        "    \"Remove multiple spaces in `t`.\"\n",
+        "    return re.sub(\" {2,}\", \" \", t)\n",
+        "\n",
+        "def replace_multi_newline(t: str) -> str:\n",
+        "    return re.sub(r\"(\\n(\\s)*){2,}\", \"\\n\", t)\n",
+        "\n",
+        "def fix_html(x: str) -> str:\n",
+        "    \"List of replacements from html strings in `x`.\"\n",
+        "    re1 = re.compile(r\"  +\")\n",
+        "    x = (\n",
+        "        x.replace(\"#39;\", \"'\")\n",
+        "        .replace(\"amp;\", \"&\")\n",
+        "        .replace(\"#146;\", \"'\")\n",
+        "        .replace(\"nbsp;\", \" \")\n",
+        "        .replace(\"#36;\", \"$\")\n",
+        "        .replace(\"\\\\n\", \"\\n\")\n",
+        "        .replace(\"quot;\", \"'\")\n",
+        "        .replace(\"<br />\", \"\\n\")\n",
+        "        .replace('\\\\\"', '\"')\n",
+        "        .replace(\" @.@ \", \".\")\n",
+        "        .replace(\" @-@ \", \"-\")\n",
+        "        .replace(\" @,@ \", \",\")\n",
+        "        .replace(\"\\\\\", \" \\\\ \")\n",
+        "    )\n",
+        "    return re1.sub(\" \", html.unescape(x))\n",
+        "\n",
+        "def clean_text(input_text):\n",
+        "    text = fix_html(input_text)\n",
+        "    text = replace_multi_newline(text)\n",
+        "    text = spec_add_spaces(text)\n",
+        "    text = rm_useless_spaces(text)\n",
+        "    text = text.strip()\n",
+        "    return text"
+      ],
+      "metadata": {
+        "id": "ctNnE1Ui8oKw"
+      },
+      "id": "ctNnE1Ui8oKw",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 1.2 Tokenize using NLTK\n",
+        "\n",
+        "We will use our rule-based `clean_text` function to clean our raw text, then use the popular NLTK [punkt tokenizer](https://www.nltk.org/_modules/nltk/tokenize/punkt.html) to convert text to individual sub-words. This will take a while because you have to download the pre-trained punkt tokenizer.\n",
+        "\n",
+        "*If you are interested: There's a [long and diverse history of converting raw text to \"tokens\"](https://arxiv.org/abs/2112.10508), and many available methods/algorithms (you can experiment with some recently trained ones, trained on a dynamic programming-based method called BPE, [here](https://huggingface.co/spaces/Xenova/the-tokenizer-playground)).*"
+      ],
+      "metadata": {
+        "id": "MiUlTSBB9Wx6"
+      },
+      "id": "MiUlTSBB9Wx6"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "vqtdrhF8FEIZ"
+      },
+      "outputs": [],
+      "source": [
+        "# ===========================================================================\n",
+        "# Tokenize using punkt. Don't modify anything in this cell.\n",
+        "# ===========================================================================\n",
+        "\n",
+        "import pandas as pd\n",
+        "import nltk\n",
+        "from tqdm import tqdm\n",
+        "\n",
+        "nltk.download('punkt')\n",
+        "df = pd.read_csv(\"OnionOrNot.csv\")\n",
+        "df[\"tokenized\"] = df[\"text\"].apply(lambda x: nltk.word_tokenize(clean_text(x.lower())))"
+      ],
+      "id": "vqtdrhF8FEIZ"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "qBBdVOYxFEIa"
+      },
+      "source": [
+        "We will use `pandas`, a popular library for data analysis and table manipulation, in this project to manage the dataset. For more information on usage, please refer to the [Pandas documentation](https://pandas.pydata.org/docs/).\n",
+        "\n",
+        "The primary data structure in Pandas is a `DataFrame`. The following cell will print out the basic information contained in our `DataFrame` structure, and the first few rows of our dataset."
+      ],
+      "id": "qBBdVOYxFEIa"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "sJjScqV3FEIb"
+      },
+      "outputs": [],
+      "source": [
+        "# View the first few entries of our dataset\n",
+        "df.head()"
+      ],
+      "id": "sJjScqV3FEIb"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Try to guess some examples! Is the task more difficult than you expected?\n",
+        "\n",
+        "DataFrames can be indexed using [`.iloc[]`](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.iloc.html). `iloc` uses interger based indexing and supports a single integer (`df.iloc[42]`), a list of integers (`df.iloc[[1, 5, 42]]`), or a slice (`df.iloc[7:42]`)."
+      ],
+      "metadata": {
+        "id": "D9b4W9z1XhgS"
+      },
+      "id": "D9b4W9z1XhgS"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "Ntm8laX6FEIb"
+      },
+      "outputs": [],
+      "source": [
+        "# E.g., get row 42 of our dataset\n",
+        "df.iloc[42]"
+      ],
+      "id": "Ntm8laX6FEIb"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 1.3 Split the dataset into training, validation, and testing"
+      ],
+      "metadata": {
+        "id": "TQVT6HUA9htQ"
+      },
+      "id": "TQVT6HUA9htQ"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "GDI72x8XFEIc"
+      },
+      "source": [
+        "**Train/Test/Val Split** - Now that we've loaded this dataset, we need to split the data into train, validation, and test sets.\n",
+        "\n",
+        "A good explanation of why we need these different sets can be found in $\\S$2.2.5 of [Eisenstein](https://github.com/jacobeisenstein/gt-nlp-class/blob/master/notes/eisenstein-nlp-notes.pdf) but our high-level goal is to have a generalized model and have confidence in our results.\n",
+        "\n",
+        "\n",
+        "The *training set* is used to fit our model's learned parameters (weights and biases) to the task. The *validation  set* (sometimes called development set) is used to verify our training jobs are minimizing loss on an unseen subset of the data and can also be used to help choose hyperparameters for our training setup. The *test set* is used to provide a final evaluation of our trained model (unbiased by development or training decisions), ideally providing some insight into how the model will perform in a scenario we cannot perfectly represent in our data (i.e., the real world). *Each of these sets should be disjoint from the others*, to prevent any leackage that could introduce bias in our evaluation metrics (in this case accuracy).\n",
+        "\n",
+        "**Model Vocabulary** - We cannot directly feed sub-word token strings into a model! We need to create a \"vocab map\", which contains an ID for each unique token in our Onion dataset. This will be used as a \"lookup\" in the next few sections, since your PyTorch implementation will require first converting your Onion token representations to a list of sub-word IDs.\n",
+        "\n",
+        "**In the following cell, please implement `split_train_val_test` and `generate_vocab_map`.**"
+      ],
+      "id": "GDI72x8XFEIc"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Set constants for PAD and UNK. You will use these values, but DO NOT change\n",
+        "# them, or import additional packages.\n",
+        "\n",
+        "from collections import Counter\n",
+        "PADDING_VALUE = 0\n",
+        "UNK_VALUE     = 1\n",
+        "\n",
+        "# ===========================================================================\n",
+        "\n",
+        "\n",
+        "def split_train_val_test(df, props=[.8, .1, .1]):\n",
+        "    \"\"\"\n",
+        "    This method takes a dataframe and splits it into train/val/test splits.\n",
+        "    It uses the props argument to split the dataset appropriately.\n",
+        "\n",
+        "    Args:\n",
+        "      df (pd.DataFrame): A dataset as a Pandas DataFrame\n",
+        "      props (list): Proportions for each split in the order of [train, validation, test].\n",
+        "                    the last value of the props array is repetitive, but we've kept it for clarity.\n",
+        "\n",
+        "    Returns:\n",
+        "      train_df (pd.DataFrame): Train DataFrame split.\n",
+        "      val_df (pd.DataFrame): Validation DataFrame split.\n",
+        "      test_df (pd.DataFrame): Test DataFramem split.\n",
+        "    \"\"\"\n",
+        "    assert round(sum(props), 2) == 1 and len(props) >= 2\n",
+        "    train_df, test_df, val_df = None, None, None\n",
+        "\n",
+        "    ### BEGIN YOUR CODE (~3-5 lines) ###\n",
+        "    ### Hint: You can use df.iloc to slice into specific indexes or ranges.\n",
+        "\n",
+        "\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "    return train_df, val_df, test_df\n",
+        "\n",
+        "\n",
+        "def generate_vocab_map(df, cutoff=2):\n",
+        "    \"\"\"\n",
+        "    This method takes a dataframe and builds a vocabulary to unique number map.\n",
+        "    It uses the cutoff argument to remove rare words occuring <= cutoff times.\n",
+        "    *NOTE*: \"\" and \"UNK\" are reserved tokens in our vocab that will be useful\n",
+        "    later. You'll also find the Counter imported for you to be useful as well.\n",
+        "\n",
+        "    Args:\n",
+        "      df (pd.DataFrame): The entire dataset this mapping is built from\n",
+        "      cutoff (int): We exclude words from the vocab that appear less than or\n",
+        "                    eq to cutoff\n",
+        "\n",
+        "    Returns:\n",
+        "      vocab (dict[str, int]):\n",
+        "        In vocab, each str is a unique token, and each dict[str] is a\n",
+        "        unique integer ID. Only elements that appear > cutoff times appear\n",
+        "        in vocab.\n",
+        "\n",
+        "      reversed_vocab (dict[int, str]):\n",
+        "        A reversed version of vocab, which allows us to retrieve\n",
+        "        words given their unique integer ID. This map will\n",
+        "        allow us to \"decode\" integer sequences we'll encode using\n",
+        "        vocab!\n",
+        "    \"\"\"\n",
+        "\n",
+        "    vocab          = {\"\": PADDING_VALUE, \"UNK\": UNK_VALUE}\n",
+        "    reversed_vocab = None\n",
+        "\n",
+        "    ### BEGIN YOUR CODE (~5-15 lines) ###\n",
+        "    ### Hint: Start by iterating over df[\"tokenized\"]\n",
+        "\n",
+        "\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "    return vocab, reversed_vocab"
+      ],
+      "metadata": {
+        "id": "zeo9kX6i9pbH"
+      },
+      "id": "zeo9kX6i9pbH",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "With the methods you have implemented above, we can now split the dataset into training, validation, and testing sets and generate our dictionaries mapping from word tokens to IDs (and vice versa).\n",
+        "\n",
+        "*Note: The props list currently being used splits the dataset so that 80% of samples are used to train, and the remaining 20% are evenly split between training and validation. How you split your dataset is itself a major choice and something you would need to consider in your own projects. Can you think of why?*"
+      ],
+      "metadata": {
+        "id": "w9LEk83hRFgT"
+      },
+      "id": "w9LEk83hRFgT"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "rcmX931OFEId"
+      },
+      "outputs": [],
+      "source": [
+        "df                         = df.sample(frac=1)\n",
+        "train_df, val_df, test_df  = split_train_val_test(df, props=[.8, .1, .1])\n",
+        "train_vocab, reverse_vocab = generate_vocab_map(train_df)"
+      ],
+      "id": "rcmX931OFEId"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "CAACzA8YFEId"
+      },
+      "outputs": [],
+      "source": [
+        "# ===========================================================================\n",
+        "# This line of code will help test your implementation, the expected output is\n",
+        "# the same distribution used in 'props' in the above cell. Try out some\n",
+        "# different values to ensure it works, but for submission ensure you use\n",
+        "# [.8, .1, .1]\n",
+        "# ===========================================================================\n",
+        "\n",
+        "(len(train_df) / len(df)), (len(val_df) / len(df)), (len(test_df) / len(df))"
+      ],
+      "id": "CAACzA8YFEId"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 1.4 Building a Dataset Class"
+      ],
+      "metadata": {
+        "id": "5fCFfEHv1hnI"
+      },
+      "id": "5fCFfEHv1hnI"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "8-qTQQa2FEIe"
+      },
+      "source": [
+        "PyTorch has custom Dataset Classes that have very useful extentions, we want to turn our current pandas DataFrame into a subclass of Dataset so that we can iterate and sample through it for minibatch updates. **In the following cell, fill out the `HeadlineDataset` class.** Refer to PyTorch documentation on [Dataset Classes](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)\n",
+        "for help."
+      ],
+      "id": "8-qTQQa2FEIe"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Please do not change, or import additional packages.\n",
+        "from torch.utils.data import Dataset\n",
+        "# ===========================================================================\n",
+        "\n",
+        "class HeadlineDataset(Dataset):\n",
+        "  \"\"\"\n",
+        "  This class takes a Pandas DataFrame and wraps in a PyTorch Dataset.\n",
+        "  Read more about Torch Datasets here:\n",
+        "  https://pytorch.org/tutorials/beginner/basics/data_tutorial.html\n",
+        "  \"\"\"\n",
+        "\n",
+        "  def __init__(self, vocab, df, max_length=50):\n",
+        "    \"\"\"\n",
+        "    Initialize this class with appropriate instance variables\n",
+        "\n",
+        "    We would *strongly* recommend storing the dataframe itself as an instance\n",
+        "    variable, and keeping this method very simple. Leave processing to\n",
+        "    __getitem__.\n",
+        "\n",
+        "    Sometimes, however, it does make sense to preprocess in __init__. If you\n",
+        "    are curious as to why, read the aside at the bottom of this cell.\n",
+        "    \"\"\"\n",
+        "\n",
+        "    ### BEGIN YOUR CODE (~3 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "    return\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "  def __len__(self):\n",
+        "    \"\"\"\n",
+        "    Return the length of the dataframe instance variable\n",
+        "    \"\"\"\n",
+        "    df_len = None\n",
+        "\n",
+        "    ### BEGIN YOUR CODE (~1 line) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "    return df_len\n",
+        "\n",
+        "  def __getitem__(self, index: int):\n",
+        "    \"\"\"\n",
+        "    Converts a dataframe row (row[\"tokenized\"]) to an encoded torch LongTensor,\n",
+        "    using our vocab map created using generate_vocab_map. Restricts the encoded\n",
+        "    headline length to max_length.\n",
+        "\n",
+        "    The purpose of this method is to convert the row - a list of words - into\n",
+        "    a corresponding list of numbers.\n",
+        "\n",
+        "    i.e. using a map of {\"hi\": 2, \"hello\": 3, \"UNK\": 0}\n",
+        "    this list [\"hi\", \"hello\", \"NOT_IN_DICT\"] will turn into [2, 3, 0]\n",
+        "\n",
+        "    Returns:\n",
+        "      tokenized_word_tensor (torch.LongTensor):\n",
+        "        A 1D tensor of type Long, that has each token in the dataframe mapped to\n",
+        "        a number. These numbers are retrieved from the vocab_map we created in\n",
+        "        generate_vocab_map.\n",
+        "\n",
+        "        **IMPORTANT**: if we filtered out the word because it's infrequent (and\n",
+        "        it doesn't exist in the vocab) we need to replace it w/ the UNK token.\n",
+        "\n",
+        "      curr_label (int):\n",
+        "        Binary 0/1 label retrieved from the DataFrame.\n",
+        "\n",
+        "    \"\"\"\n",
+        "    tokenized_word_tensor = None\n",
+        "    curr_label            = None\n",
+        "\n",
+        "    ### BEGIN YOUR CODE (~3-7 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "    return tokenized_word_tensor, curr_label\n",
+        "\n",
+        "\n",
+        "# ===========================================================================\n",
+        "# Completely optional aside on preprocessing in __init__.\n",
+        "#\n",
+        "# Sometimes the compute bottleneck actually ends up being in __getitem__.\n",
+        "# In this case, you'd loop over your dataset in __init__, passing data\n",
+        "# to __getitem__ and storing it in another instance variable. Then,\n",
+        "# you can simply return the preprocessed data in __getitem__ instead of\n",
+        "# doing the preprocessing.\n",
+        "#\n",
+        "# There is a tradeoff though: can you think of one?\n",
+        "# ==========================================================================="
+      ],
+      "metadata": {
+        "id": "tqt9q92J1QKK"
+      },
+      "id": "tqt9q92J1QKK",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "KuLtIOAZFEIe"
+      },
+      "outputs": [],
+      "source": [
+        "from torch.utils.data import RandomSampler\n",
+        "\n",
+        "train_dataset = HeadlineDataset(train_vocab, train_df)\n",
+        "val_dataset   = HeadlineDataset(train_vocab, val_df)\n",
+        "test_dataset  = HeadlineDataset(train_vocab, test_df)\n",
+        "\n",
+        "# Now that we're wrapping our dataframes in PyTorch datsets, we can make use of\n",
+        "# PyTorch Random Samplers, they'll define how our DataLoaders sample elements\n",
+        "# from the HeadlineDatasets\n",
+        "train_sampler = RandomSampler(train_dataset)\n",
+        "val_sampler   = RandomSampler(val_dataset)\n",
+        "test_sampler  = RandomSampler(test_dataset)"
+      ],
+      "id": "KuLtIOAZFEIe"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 1.5 Finalizing our DataLoader"
+      ],
+      "metadata": {
+        "id": "n9iBiSKF1yXA"
+      },
+      "id": "n9iBiSKF1yXA"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "lfXSbxoFFEIe"
+      },
+      "source": [
+        "We can now use PyTorch `DataLoader` to batch our data for us. **In the following cell, please implement `collate_fn`.** Refer to PyTorch documentation on [`DataLoader`](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html) for help."
+      ],
+      "id": "lfXSbxoFFEIe"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Please do not change, or import additional packages.\n",
+        "from torch.nn.utils.rnn import pad_sequence\n",
+        "# ===========================================================================\n",
+        "\n",
+        "def collate_fn(batch, padding_value=PADDING_VALUE):\n",
+        "  \"\"\"\n",
+        "  This function is passed as a parameter to Torch DataSampler. collate_fn collects\n",
+        "  batched rows, in the form of tuples, from a DataLoader and applies some final\n",
+        "  pre-processing.\n",
+        "\n",
+        "  Objective:\n",
+        "    In our case, we need to take the batched input array of 1D tokenized_word_tensors,\n",
+        "    and create a 2D tensor that's padded to be the max length from all our tokenized_word_tensors\n",
+        "    in a batch. We're moving from a Python array of tuples, to a padded 2D tensor.\n",
+        "\n",
+        "    *HINT*: you're allowed to use torch.nn.utils.rnn.pad_sequence (ALREADY IMPORTED)\n",
+        "\n",
+        "    Finally, you can read more about collate_fn here: https://pytorch.org/docs/stable/data.html\n",
+        "\n",
+        "  Args:\n",
+        "    batch: PythonArray[tuple(tokenized_word_tensor: 1D Torch.LongTensor, curr_label: int)]\n",
+        "           len(batch) == BATCH_SIZE\n",
+        "\n",
+        "  Returns:\n",
+        "    padded_tokens: 2D LongTensor of shape (BATCH_SIZE, max len of all tokenized_word_tensor))\n",
+        "    y_labels: 1D FloatTensor of shape (BATCH_SIZE)\n",
+        "\n",
+        "  \"\"\"\n",
+        "  padded_tokens, y_labels = None, None\n",
+        "\n",
+        "  ### BEGIN YOUR CODE (~4-8 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "  ### END YOUR CODE ###\n",
+        "\n",
+        "  return padded_tokens, y_labels"
+      ],
+      "metadata": {
+        "id": "Zp1aQAvn1_mz"
+      },
+      "id": "Zp1aQAvn1_mz",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "OayoJRTeFEIf"
+      },
+      "outputs": [],
+      "source": [
+        "from torch.utils.data import DataLoader\n",
+        "BATCH_SIZE = 16\n",
+        "\n",
+        "train_iterator = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler, collate_fn=collate_fn)\n",
+        "val_iterator   = DataLoader(val_dataset, batch_size=BATCH_SIZE, sampler=val_sampler, collate_fn=collate_fn)\n",
+        "test_iterator  = DataLoader(test_dataset, batch_size=BATCH_SIZE, sampler=test_sampler, collate_fn=collate_fn)"
+      ],
+      "id": "OayoJRTeFEIf"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "pidbg12AFEIf"
+      },
+      "outputs": [],
+      "source": [
+        "# ===========================================================================\n",
+        "# Use this to test your collate_fn implementation.\n",
+        "#\n",
+        "# You can look at the shapes of x and y or put print statements in collate_fn\n",
+        "# while running this snippet\n",
+        "# ===========================================================================\n",
+        "\n",
+        "# for x, y in test_iterator:\n",
+        "#     print(x, y)\n",
+        "#     print(f'x: {x.shape}')\n",
+        "#     print(f'y: {y.shape}')\n",
+        "#     break\n",
+        "# test_iterator = DataLoader(test_dataset, batch_size=BATCH_SIZE, sampler=test_sampler, collate_fn=collate_fn)"
+      ],
+      "id": "pidbg12AFEIf"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "BWLK7T1uFEIg"
+      },
+      "source": [
+        "## 2. Modeling [10 points]\n",
+        "Now that we have a clean dataset and a useful PyTorch `DataLoader` object, we can begin building a model for our task! In the following code block, you will build a feed-forward neural network implementing a neural bag-of-words baseline, `NBOW-RAND`, described in $\\S$2.1 of [this paper](https://www.aclweb.org/anthology/P15-1162.pdf). You may find [the PyTorch `torch.nn` docs](https://pytorch.org/docs/stable/nn.html) useful for understanding the different layers and [this PyTorch sequence models tutorial](https://pytorch.org/tutorials/beginner/nlp/sequence_models_tutorial.html) for how to put together `torch.nn` layers.\n",
+        "\n",
+        "The core intuition behind `NBOW-RAND` is that after we embed each word for our input, we average the embeddings to produce a single vector that hopefully averages the information across all embeddings. Formally, we first convert each document of length $n$ tokens into a matrix of $n\\times d$, where $d$ is the dimension of the token embedding. Then we average all embeddings to produce a vector of length $d$.\n",
+        "\n",
+        "If you are new to PyTorch, ensuring your matrix operations are correct is often the most common source of errors. Keep in mind how the dimensions change and what each axes represents. Your documents will be passed in as minibatches, so be careful when selecting which axes to apply certain operations. Feel free to experiment with the architecture of this network outside of the basic `NBOW-RAND` setup (such as adding in other layers) to see how this changes your results."
+      ],
+      "id": "BWLK7T1uFEIg"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 2.1 Define the NBOW model class"
+      ],
+      "metadata": {
+        "id": "pZDPs0Sf-H3V"
+      },
+      "id": "pZDPs0Sf-H3V"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Please do not change, or import additional packages.\n",
+        "import torch.nn as nn\n",
+        "# ===========================================================================\n",
+        "\n",
+        "class NBOW(nn.Module):\n",
+        "  def __init__(self, vocab_size, embedding_dim):\n",
+        "    \"\"\"\n",
+        "    Instantiate layers for your model.\n",
+        "    Your model architecture will be a feed-forward neural network.\n",
+        "\n",
+        "    You will need 3 nn.Modules at minimum\n",
+        "     1. An embeddings layer (see nn.Embedding)\n",
+        "     2. A linear layer (see nn.Linear)\n",
+        "     3. A sigmoid output (see nn.Sigmoid)\n",
+        "\n",
+        "    HINT: In the forward step, the BATCH_SIZE is the first dimension.\n",
+        "    \"\"\"\n",
+        "    super().__init__()\n",
+        "\n",
+        "    ### BEGIN YOUR CODE (~4 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "  def forward(self, x):\n",
+        "    \"\"\"\n",
+        "    Complete the forward pass of the model.\n",
+        "\n",
+        "    Use the output of the embedding layer to create the average vector,\n",
+        "    which will be input into the linear layer.\n",
+        "\n",
+        "    Args:\n",
+        "      x: 2D LongTensor of shape (BATCH_SIZE, max len of all tokenized_word_tensor))\n",
+        "         This is the same output that comes out of the collate_fn function you completed\n",
+        "    \"\"\"\n",
+        "    ### BEGIN YOUR CODE (~4-5 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "    # return x\n",
+        "    ### END YOUR CODE ###\n"
+      ],
+      "metadata": {
+        "id": "jzGx2q0jLqyU"
+      },
+      "execution_count": null,
+      "outputs": [],
+      "id": "jzGx2q0jLqyU"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 2.2 Initialize the NBOW classification model\n",
+        "\n",
+        "Since the NBOW model is rather basic, there is only one meaningful hyperparameter w.r.t. model architecture: the size of the embedding dimension (`embedding_dim`). (We also see a `vocab_size` parameter here, but this only a by-product on our cutoff for infrequent tokens, there also may more hyperparameters if you modified the architecture, such as adding a linear layer).\n",
+        "\n",
+        "Remember the CUDA discussion in the first cell of this notebook? Here the `.to(device)` is where that discussion becomes relevant (if `device=='cuda'`, PyTorch will perform the matrix operations on GPU). If you recieve a mismatch error, your tensors may be on different devices."
+      ],
+      "metadata": {
+        "id": "xltosIzM-SP2"
+      },
+      "id": "xltosIzM-SP2"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "_HQWUu-ZFEIg"
+      },
+      "outputs": [],
+      "source": [
+        "model = NBOW(\n",
+        "  vocab_size    = len(train_vocab.keys()),\n",
+        "  embedding_dim = 300\n",
+        ").to(device)"
+      ],
+      "id": "_HQWUu-ZFEIg"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 2.3 Instantiate the loss function and optimizer"
+      ],
+      "metadata": {
+        "id": "C4CZnj1f-da-"
+      },
+      "id": "C4CZnj1f-da-"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "9aXi8nA0FEIh"
+      },
+      "source": [
+        "Please select and instantiate an appropriate loss function and optimizer.\n",
+        "\n",
+        "*Hint: What loss functions are availible for binary classification? Feel free to look at the [torch.nn docs on loss functions](https://pytorch.org/docs/stable/nn.html#loss-functions) for help!*"
+      ],
+      "id": "9aXi8nA0FEIh"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "w98UvlXxFEIh"
+      },
+      "outputs": [],
+      "source": [
+        "# While we import Adam for you, you may try / import other optimizers as well\n",
+        "from torch.optim import Adam\n",
+        "\n",
+        "criterion, optimizer = None, None\n",
+        "\n",
+        "### BEGIN YOUR CODE ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "### END YOUR CODE ###"
+      ],
+      "id": "w98UvlXxFEIh"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Now that we have a NBOW model, a loss function, optimizer and dataset, we can begin training!"
+      ],
+      "metadata": {
+        "id": "hUXBtqPEjiRe"
+      },
+      "id": "hUXBtqPEjiRe"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "bVLeTa8wFEIh"
+      },
+      "source": [
+        "## 3. Training and Evaluation [10 points]\n",
+        "We will now instantiate a `train_loop`, and a `val_loop` to evaluate our model at each epoch.\n",
+        "\n",
+        "**Fill out the train and test loops below. Treat real headlines as `False`, and Onion headlines as `True`.**"
+      ],
+      "id": "bVLeTa8wFEIh"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "vganx5fCFEIh"
+      },
+      "outputs": [],
+      "source": [
+        "def train_loop(model, criterion, optim, iterator):\n",
+        "  \"\"\"\n",
+        "  Returns the total loss calculated from criterion\n",
+        "  \"\"\"\n",
+        "  model.train()\n",
+        "  total_loss = 0\n",
+        "  for x, y in tqdm(iterator):\n",
+        "    ### BEGIN YOUR CODE (~6 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "  return total_loss\n",
+        "\n",
+        "\n",
+        "def val_loop(model, iterator):\n",
+        "  \"\"\"\n",
+        "  Returns:\n",
+        "    true (List[bool]): All the ground truth values taken from the dataset iterator\n",
+        "    pred (List[bool]): All model predictions.\n",
+        "  \"\"\"\n",
+        "  true, pred = [], []\n",
+        "\n",
+        "  ### BEGIN YOUR CODE (~8 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "  ### END YOUR CODE ###\n",
+        "\n",
+        "  return true, pred"
+      ],
+      "id": "vganx5fCFEIh"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 3.1 Define the evaluation metrics"
+      ],
+      "metadata": {
+        "id": "JNXJevTu-tDZ"
+      },
+      "id": "JNXJevTu-tDZ"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "7IsZQs3rFEIi"
+      },
+      "source": [
+        "We will also need evaluation metrics to tell us how well our model is doing on the validation set at each epoch and later how well the model does on the held-out test set. You may find $\\S$4.4.1 of Eisenstein useful for these questions.\n",
+        "\n",
+        "**Complete the functions in the following cell.**"
+      ],
+      "id": "7IsZQs3rFEIi"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Note: You will not need to import anything to implement these functions.\n",
+        "\n",
+        "def accuracy(true, pred):\n",
+        "  \"\"\"\n",
+        "  Calculate the ratio of correct predictions.\n",
+        "\n",
+        "  Args:\n",
+        "    true (List[bool]): ground truth\n",
+        "    pred (List[bool]): model predictions\n",
+        "\n",
+        "  Returns:\n",
+        "    acc (float): percent accuracy with range [0, 1]\n",
+        "  \"\"\"\n",
+        "  acc = None\n",
+        "  ### BEGIN YOUR CODE (~2-5 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "  ### END YOUR CODE ###\n",
+        "  return acc\n",
+        "\n",
+        "\n",
+        "def binary_f1(true, pred, selected_class=True):\n",
+        "  \"\"\"\n",
+        "  Calculate F-1 scores for a binary classification task.\n",
+        "\n",
+        "  Args:\n",
+        "    true (List[bool]): ground truth\n",
+        "    pred (List[bool]): model predictions\n",
+        "    selected_class (bool): the selected class the F-1 is being calculated for.\n",
+        "\n",
+        "  Returns:\n",
+        "    f1 (float): F-1 score between [0, 1]\n",
+        "  \"\"\"\n",
+        "  f1 = None\n",
+        "  ### BEGIN YOUR CODE (~10-15 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "  ### END YOUR CODE ###\n",
+        "  return f1\n",
+        "\n",
+        "\n",
+        "def binary_macro_f1(true, pred):\n",
+        "  \"\"\"\n",
+        "  Calculate averaged F-1 for all selected (true/false) classes.\n",
+        "\n",
+        "  Args:\n",
+        "    true (List[bool]): ground truth\n",
+        "    pred (List[bool]): model predictions\n",
+        "  \"\"\"\n",
+        "  averaged_macro_f1 = None\n",
+        "  ### BEGIN YOUR CODE (~1 line) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "  ### END YOUR CODE ###\n",
+        "  return averaged_macro_f1"
+      ],
+      "metadata": {
+        "id": "gMQDg9Vy-wY0"
+      },
+      "id": "gMQDg9Vy-wY0",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "Yw79JFieFEIi"
+      },
+      "outputs": [],
+      "source": [
+        "# ===========================================================================\n",
+        "# To test your eval implementation, we will evaluate the untrained model on our\n",
+        "# dev dataset. It will do pretty poorly (it's untrained), but the exact performance\n",
+        "# will be random since the initialization of the model parameters is random.\n",
+        "# ===========================================================================\n",
+        "\n",
+        "true, pred = val_loop(model, val_iterator)\n",
+        "print(f'Binary Macro F1: {binary_macro_f1(true, pred)}')\n",
+        "print(f'Accuracy: {accuracy(true, pred)}')"
+      ],
+      "id": "Yw79JFieFEIi"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "Q2to0kWVFEIi"
+      },
+      "source": [
+        "## 4. Full Training Run [1 point]\n",
+        "Now we can perform a full run and see the model fit our loss. If everything goes correctly, you should be able to achieve a validation F1 score of at least `0.80`\n",
+        "\n",
+        "**Feel free to adjust the number of epochs to prevent overfitting or underfitting and to play with your model hyperparameters/optimizer & loss function.**"
+      ],
+      "id": "Q2to0kWVFEIi"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "N-iuqkKCFEIj"
+      },
+      "outputs": [],
+      "source": [
+        "TOTAL_EPOCHS = 10\n",
+        "for epoch in range(TOTAL_EPOCHS):\n",
+        "    train_loss = train_loop(model, criterion, optimizer, train_iterator)\n",
+        "    true, pred = val_loop(model, val_iterator)\n",
+        "    print(f\"EPOCH: {epoch}\")\n",
+        "    print(f\"TRAIN LOSS: {train_loss}\")\n",
+        "    print(f\"VAL F-1: {binary_macro_f1(true, pred)}\")\n",
+        "    print(f\"VAL ACC: {accuracy(true, pred)}\")"
+      ],
+      "id": "N-iuqkKCFEIj"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "_l91F4ooFEIj"
+      },
+      "source": [
+        "We can also look at the models performance on the held-out test set, using the same `val_loop` from earlier."
+      ],
+      "id": "_l91F4ooFEIj"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "vs8Fy_ncFEIo"
+      },
+      "outputs": [],
+      "source": [
+        "true, pred = val_loop(model, test_iterator)\n",
+        "print(f\"TEST F-1: {binary_macro_f1(true, pred)}\")\n",
+        "print(f\"TEST ACC: {accuracy(true, pred)}\")"
+      ],
+      "id": "vs8Fy_ncFEIo"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "rMPWmorEFEIp"
+      },
+      "source": [
+        "## 5. Analysis [5 points]\n",
+        "While modeling and accuracy are a great signal that our model is working in our specific task setup, an inspection of what the model is classifying (particularly its errors), can allow us to hypothesize about what is going on, why it works, and how to improve.\n",
+        "\n"
+      ],
+      "id": "rMPWmorEFEIp"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 5.1 Impact of Vocab Size\n",
+        "**Question:** *What happens to the vocab size as you change the cutoff in the cell below? Can you explain this in the context of [Zipf's Law](https://en.wikipedia.org/wiki/Zipf%27s_law)?*\n",
+        "\n",
+        "**Answer:** [YOUR ANSWER HERE]"
+      ],
+      "metadata": {
+        "id": "fnjKlKt352hQ"
+      },
+      "id": "fnjKlKt352hQ"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "pI0fM4oMFEIp"
+      },
+      "outputs": [],
+      "source": [
+        "tmp_vocab, _ = generate_vocab_map(train_df, cutoff = 1)\n",
+        "len(tmp_vocab)"
+      ],
+      "id": "pI0fM4oMFEIp"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "d0x54B1lFEIp"
+      },
+      "source": [
+        "### 5.2 Error Analysis\n",
+        "\n",
+        "*Can you describe what cases the model is getting wrong in the witheld test-set?*\n",
+        "\n",
+        "To do this, you will need to create a new `val_train_loop_incorrect` which returns incorrect sequences **and** you will need to decode these sequences back into words. You have already created a map that can convert encoded sequences back to regular English (`reverse_vocab`)."
+      ],
+      "id": "d0x54B1lFEIp"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "TfohtPF8FEIp"
+      },
+      "outputs": [],
+      "source": [
+        "def val_train_loop_incorrect(model, iterator):\n",
+        "  \"\"\"\n",
+        "  Implement this however you like! It should look very similar to val_loop.\n",
+        "  Pass the test_iterator through this function to look at errors in the test set.\n",
+        "  \"\"\"\n",
+        "\n"
+      ],
+      "id": "TfohtPF8FEIp"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "val_train_loop_incorrect(model, test_iterator)"
+      ],
+      "metadata": {
+        "id": "6-azPje88iU0"
+      },
+      "id": "6-azPje88iU0",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Now that we have our incorrect sequences:   \n",
+        "**Question:** *Can you describe what cases the model is getting wrong in the witheld test-set?*\n",
+        "\n",
+        "**Answer:** [YOUR ANSWER HERE]"
+      ],
+      "metadata": {
+        "id": "mUoLTGAScre7"
+      },
+      "id": "mUoLTGAScre7"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## 6. LSTM Model [Extra credit, 4 points]"
+      ],
+      "metadata": {
+        "id": "Ie9VqRbg78Ty"
+      },
+      "id": "Ie9VqRbg78Ty"
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 6.1 Define the RecurrentModel class\n",
+        "Something that has been overlooked in this project (and a significant limitation of the bag-of-words approach) is the sequential structure of language: a word typically only has a clear meaning because of its relationship to the words before and after it in the sequence, and the feed-forward network of Part 2 cannot model this type of data. A solution to this, is the use of [recurrent neural networks](https://colah.github.io/posts/2015-08-Understanding-LSTMs/). These types of networks not only produce some output given some step from a sequence, but also update their internal state, hopefully \"remembering\" some information about the previous steps in the input sequence. Of course, they do have their own faults, but we'll cover this more thoroughly later in the semester.\n",
+        "\n",
+        "Your task for the extra credit portion of this assignment, is to implement such a model below using a LSTM. Instead of averaging the embeddings as with the FFN in Part 2, you'll instead feed all of these embeddings to a LSTM layer, get its final output, and use this to make your prediction for the class of the headline."
+      ],
+      "metadata": {
+        "id": "gXWSfPfBA4XU"
+      },
+      "id": "gXWSfPfBA4XU"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "class RecurrentModel(nn.Module):\n",
+        "  def __init__(self, vocab_size, embedding_dim, hidden_dim, \\\n",
+        "                num_layers=1, bidirectional=True):\n",
+        "    \"\"\"\n",
+        "    Instantiate layers for your model\n",
+        "\n",
+        "    Your model architecture will be an optionally bidirectional LSTM, followed\n",
+        "    by a linear + sigmoid layer.\n",
+        "\n",
+        "    You will need 4 nn.Modules:\n",
+        "      1. An embeddings layer (see nn.Embedding)\n",
+        "      2. A bidirectional LSTM (see nn.LSTM)\n",
+        "      3. A Linear layer (see nn.Linear)\n",
+        "      4. A sigmoid output (see nn.Sigmoid)\n",
+        "\n",
+        "    HINT: In the forward step, the BATCH_SIZE is the first dimension.\n",
+        "    HINT: Think about what happens to the linear layer's hidden_dim size\n",
+        "          if bidirectional is True or False.\n",
+        "    \"\"\"\n",
+        "    super().__init__()\n",
+        "\n",
+        "    ### BEGIN YOUR CODE (~4 lines) ###\n",
+        "\n",
+        "\n",
+        "\n",
+        "    ### END YOUR CODE ###\n",
+        "\n",
+        "  def forward(self, x):\n",
+        "    \"\"\"\n",
+        "    Complete the forward pass of the model.\n",
+        "\n",
+        "    Use the last timestep of the output of the LSTM as input to the linear\n",
+        "    layer. This will only require some indexing into the correct return\n",
+        "    from the LSTM layer.\n",
+        "\n",
+        "    Args:\n",
+        "      x: 2D LongTensor of shape (BATCH_SIZE, max len of all tokenized_word_tensor))\n",
+        "         This is the same output that comes out of the collate_fn function you completed-\n",
+        "    \"\"\"\n",
+        "    ### BEGIN YOUR CODE (~4-5 lines) ###\n",
+        "\n",
+        "\n",
+        "    # return x\n",
+        "\n",
+        "    ### END YOUR CODE ###"
+      ],
+      "metadata": {
+        "id": "YN8zvhLJ-MVJ"
+      },
+      "id": "YN8zvhLJ-MVJ",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Now that the `RecurrentModel` is defined, we will reinitialize our dataset iterators."
+      ],
+      "metadata": {
+        "id": "HprkOm-fAVyj"
+      },
+      "id": "HprkOm-fAVyj"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "train_iterator = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler, collate_fn=collate_fn)\n",
+        "val_iterator   = DataLoader(val_dataset, batch_size=BATCH_SIZE, sampler=val_sampler, collate_fn=collate_fn)\n",
+        "test_iterator  = DataLoader(test_dataset, batch_size=BATCH_SIZE, sampler=test_sampler, collate_fn=collate_fn)"
+      ],
+      "metadata": {
+        "id": "6-uftfXEAqOi"
+      },
+      "id": "6-uftfXEAqOi",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 6.2 Initialize the LSTM classification model\n",
+        "\n",
+        "Next we need to initialize our new LSTM model, as well as define it's optimizer and loss function as we did for the FFNN. Feel free to use the same optimizer you did above, or see how this model reacts to different optimizers/learning rates than the FFNN.  "
+      ],
+      "metadata": {
+        "id": "2qROtRw3AtZy"
+      },
+      "id": "2qROtRw3AtZy"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "lstm_model = RecurrentModel(vocab_size    = len(train_vocab.keys()),\n",
+        "                            embedding_dim = 300,\n",
+        "                            hidden_dim    = 300,\n",
+        "                            num_layers    = 1,\n",
+        "                            bidirectional = True).to(device)"
+      ],
+      "metadata": {
+        "id": "LNWcLJpsBRzg"
+      },
+      "id": "LNWcLJpsBRzg",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "lstm_criterion, lstm_optimizer = None, None\n",
+        "\n",
+        "### BEGIN YOUR CODE ###\n",
+        "\n",
+        "\n",
+        "### END YOUR CODE ###"
+      ],
+      "metadata": {
+        "id": "OdTxe0bFBqnP"
+      },
+      "id": "OdTxe0bFBqnP",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### 6.3 Training and Evaluation\n",
+        "\n",
+        "Because the only difference between this model and the FFN is the internal structure, we can use the same methods as above to evaluate and train it. You should be able to achieve a validation F-1 score of at least `0.80` if everything went correctly.\n",
+        "\n",
+        "**Feel free to adjust the number of epochs to prevent overfitting or underfitting and to play with your model hyperparameters/optimizer & loss function.**"
+      ],
+      "metadata": {
+        "id": "NFvV7H7OBzWl"
+      },
+      "id": "NFvV7H7OBzWl"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Pre-train to see what accuracy we can get with random parameters\n",
+        "# ===========================================================================\n",
+        "\n",
+        "true, pred = val_loop(lstm_model, val_iterator)\n",
+        "print(f'Binary Macro F1: {binary_macro_f1(true, pred)}')\n",
+        "print(f'Accuracy: {accuracy(true, pred)}')"
+      ],
+      "metadata": {
+        "id": "SdkEpedxDopv"
+      },
+      "id": "SdkEpedxDopv",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Train your LSTM model\n",
+        "# ===========================================================================\n",
+        "\n",
+        "TOTAL_EPOCHS = 10\n",
+        "for epoch in range(TOTAL_EPOCHS):\n",
+        "    train_loss = train_loop(lstm_model, lstm_criterion, lstm_optimizer, train_iterator)\n",
+        "    true, pred = val_loop(lstm_model, val_iterator)\n",
+        "    print(f\"EPOCH: {epoch}\")\n",
+        "    print(f\"TRAIN LOSS: {train_loss}\")\n",
+        "    print(f\"VAL F-1: {binary_macro_f1(true, pred)}\")\n",
+        "    print(f\"VAL ACC: {accuracy(true, pred)}\")"
+      ],
+      "metadata": {
+        "id": "6p2dF9X4DyIR"
+      },
+      "id": "6p2dF9X4DyIR",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# ===========================================================================\n",
+        "# Evaluate your model on the held-out test set\n",
+        "# ===========================================================================\n",
+        "\n",
+        "true, pred = val_loop(lstm_model, test_iterator)\n",
+        "print(f\"TEST F-1: {binary_macro_f1(true, pred)}\")\n",
+        "print(f\"TEST ACC: {accuracy(true, pred)}\")"
+      ],
+      "metadata": {
+        "id": "OR8Dl5DLEQwd"
+      },
+      "id": "OR8Dl5DLEQwd",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## 7. Submit Your Homework\n",
+        "This is the end of Project 1. Congratulations!  \n",
+        "\n",
+        "Now, follow the steps below to submit your homework in [Gradescope](https://www.gradescope.com/courses/944807):\n",
+        "\n",
+        "1. Rename this ipynb file to `CS4650_p1_GTusername.ipynb`. Make sure all cells have been run. We recommend ensuring you have removed any extraneous cells & print statements, clearing all outputs, and using the Runtime --> Run all tool to make sure all output is update to date.\n",
+        "2. Click on the menu 'File' --> 'Download' --> 'Download .py'.\n",
+        "3. Click on the menu 'File' --> 'Download' --> 'Download .ipynb'.\n",
+        "4. Download the notebook as a .pdf document. Make sure the output from Parts 4 & 6.3 are captured so we can see how the loss, F1, & accuracy changes while training.\n",
+        "5. Upload all 3 files to Gradescope. Double check the files start with `CS4650_p1_*`, capitalization matters."
+      ],
+      "metadata": {
+        "id": "mY8S9ZK9zuVs"
+      },
+      "id": "mY8S9ZK9zuVs"
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "file_extension": ".py",
+      "mimetype": "text/x-python",
+      "name": "python",
+      "nbconvert_exporter": "python",
+      "pygments_lexer": "ipython3",
+      "version": "3.7.4"
+    },
+    "colab": {
+      "provenance": [],
+      "machine_shape": "hm",
+      "include_colab_link": true
+    },
+    "accelerator": "GPU"
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
